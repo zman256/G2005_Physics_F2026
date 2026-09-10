@@ -35,3 +35,7 @@
 
 bin
 
+# CMake / CMake Tools (VS Code)
+build/
+out/
+CMakeUserPresets.json

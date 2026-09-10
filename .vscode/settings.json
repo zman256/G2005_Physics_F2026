@@ -1,0 +1,8 @@
+{
+    "cmake.configureOnOpen": true,
+    "cmake.buildBeforeRun": true,
+    "cmake.preferredGenerators": [
+        "Visual Studio 17 2022",
+        "Ninja"
+    ]
+}
