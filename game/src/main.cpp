@@ -19,6 +19,7 @@ float launchPositionAdjustmentSpeed = 50.0f;
 float launchSpeed = 0.0f;
 float launchAngle = 0.0f;  // Deg
 float spawnDrag = 0.0f; // Damping value to apply to physics object velocities
+// I will use spawn radius to create the expanding bird. for now its just assigned to each birds radius. 
 float spawnRadius = 10.0f;
 
 // Struct to contain position and velocity state (for exercise 2)
@@ -62,7 +63,7 @@ class HalfPlane : public Collider
     // need to use cross product to get normal
     Vector2 GetNormal()
     {
-
+        return {};
     }
 };
 
@@ -99,7 +100,7 @@ bool isOverlappingCircle(const PhysicsBody& a, const PhysicsBody &b)
 
 bool isOverlappingCircleHalfPlane(const PhysicsBody& b, const PhysicsBody& a)
 {
-
+    return true;
 }
 
 bool isOverlapping(PhysicsBody a, PhysicsBody b)
@@ -123,6 +124,7 @@ struct Bounds2D
         return point.x >= min.x && point.x <= max.x && point.y >= min.y && point.y <= max.y;
     }
 
+private:
     Vector2 min;
     Vector2 max;
 };
@@ -176,7 +178,7 @@ class PhysicsSimulation
                         // bodies[i].color = RED;
                         // bodies[j].color = RED;  
                         bodyA->color = RED;
-                        bodyB->color = RED;
+                        bodyB->color = BLUE;
                     }
                     
                     //HalfPlane collision
@@ -257,6 +259,14 @@ class PhysicsSimulation
                 }
             }
         }
+
+        ~PhysicsSimulation()
+        {
+            for (int i = 0; i < bodies.size(); i++)
+            {
+                delete bodies[i].collider;
+            }
+        }
         
     private:
     std::vector<PhysicsBody> bodies; // A container of all PhysicsBody in the simulation
@@ -274,7 +284,7 @@ int main()
     SetTargetFPS(TARGET_FPS);
 
     PhysicsBody target;
-    target.radius = 50.0f;
+    target.radius = 80.0f;
     target.gravityScale = 0;
     target.position = { 800, (float)screenHeight - 300};
     Circle* targetCircle = new Circle;
@@ -313,14 +323,14 @@ int main()
             {
                 PhysicsBody birdToLaunch;
                 birdToLaunch.color = RED;
-                birdToLaunch.radius = 10;
+                birdToLaunch.radius = spawnRadius;
                 birdToLaunch.position = launchPosition;
                 birdToLaunch.velocity = velocityPreview;
                 birdToLaunch.drag = spawnDrag;
                 birdToLaunch.trailColor = BLACK;
 
                 Circle* birdCircle = new Circle();
-                birdCircle->radius = 10.0f;
+                birdCircle->radius = birdToLaunch.radius;
                 birdToLaunch.collider = birdCircle; // a Circle* can be stored in a Collider* (Composition "has a")
 
                 sim.Add(birdToLaunch);
