@@ -62,23 +62,27 @@ public:
 class HalfPlane : public Collider
 {
 public:
-    Vector2 normal = { 0, -1 };
-    Vector2 position2 = { 0, 0 };
+    Vector2 normal; // unit vector pointing to the open side ({0, -1} = up, since y goes down in raylib)
 
-    HalfPlane(Vector2 normal) : normal(normal) {}
+    HalfPlane(Vector2 normal) : normal(Vector2Normalize(normal)) {} // normalize so it's always length 1
 
     ColliderShape GetShape() override
     {
         return HALFPLANE;
     }
 
-    void Draw(Vector2 position, Color color) override {} // TODO: draw the plane's line
-
-    // need to use cross product to get normal
-    Vector2 GetNormal()
+    void Draw(Vector2 position, Color color) override
     {
-        return normal;
+        Vector2 along = { -normal.y, normal.x }; // perpendicular to the normal = direction of the surface
+        DrawLineEx(position - along * 5000, position + along * 5000, 3, color); // long enough to look infinite
+        DrawLineEx(position, position + normal * 60, 3, YELLOW); // normal arrow
+        DrawCircleV(position + normal * 60, 5, YELLOW);
     }
+/* 
+    use later when needing to find the normal of a rotating plane
+    Vector2 n = ((HalfPlane*)plane.collider)->normal;
+    Vector2 GetNormal() { Vector2 dir = position2 - position; return Vector2Normalize({ dir.y, -dir.x }); }
+ */
 };
 
 // Composition "has a": every body has a collider that decides its shape
@@ -126,7 +130,12 @@ bool isOverlappingCircle(const PhysicsBody& a, const PhysicsBody& b)
 
 bool isOverlappingCircleHalfPlane(const PhysicsBody& circle, const PhysicsBody& plane)
 {
-    return true;
+    Vector2 normal = ((HalfPlane*)plane.collider)->normal;
+    float radius = ((Circle*)circle.collider)->radius;
+
+    Vector2 displacement = circle.position - plane.position; // d = C - P
+    float distance = Vector2DotProduct(displacement, normal); // projecting d onto the normal = how far C is above the plane
+    return distance < radius;
 }
 
 struct Bounds2D
@@ -254,6 +263,37 @@ class PhysicsSimulation
             }
         }
 
+        // Draws each step of the circle vs half plane dot product so it can be seen at runtime
+        void DrawDebug()
+        {
+            for (int i = 0; i < bodies.size(); i++)
+            {
+                for (int j = 0; j < bodies.size(); j++)
+                {
+                    if (bodies[i]->collider->GetShape() != CIRCLE || bodies[j]->collider->GetShape() != HALFPLANE)
+                    {
+                        continue; // only circle (i) vs half plane (j) pairs
+                    }
+
+                    Vector2 C = bodies[i]->position; // circle centre
+                    Vector2 P = bodies[j]->position; // point on the plane
+                    Vector2 n = ((HalfPlane*)bodies[j]->collider)->normal;
+                    float radius = ((Circle*)bodies[i]->collider)->radius;
+
+                    Vector2 d = C - P;
+                    float dot = Vector2DotProduct(d, n);
+                    Vector2 projection = P + n * dot; // where C lands on the normal axis
+
+                    DrawLineEx(P - n * 2000, P + n * 2000, 1, Fade(YELLOW, 0.4f)); // normal axis being projected onto
+                    DrawLineEx(P, C, 2, WHITE); // d = C - P
+                    DrawLineEx(C, projection, 1, LIGHTGRAY); // drop from C onto the axis
+                    DrawLineEx(P, projection, 4, ORANGE); // the dot product as a length along the normal
+                    DrawCircleV(P + n * radius, 5, RED); // overlap threshold: overlapping when dot < radius
+                    DrawText(TextFormat("dot = %.1f  r = %.1f", dot, radius), (int)C.x + 15, (int)C.y - 25, 18, BLACK);
+                }
+            }
+        }
+
         // the simulation owns the body now and deletes it when it's removed
         void Add(PhysicsBody* body)
         {
@@ -292,7 +332,7 @@ class PhysicsSimulation
 // PhysicsBody bird; // = {Vector2{-1000, -1000,}, Vector2{ 0, 0 }};
 PhysicsSimulation sim;
 float margin = 0;
-// sim.bounds = { Vector2 {0 - margin, screenHeight + margin, 0 - margin, screenWidth + margin} };
+bool showDebug = true;
 
 int main()
 {
@@ -302,6 +342,8 @@ int main()
 
     // position, collider, velocity, drag, gravityScale (0 = static)
     sim.Add(new PhysicsBody({ 800, (float)screenHeight - 300 }, new Circle(80.0f), { 0, 0 }, 0.0f, 0.0f));
+    // ground: normal points up
+    sim.Add(new PhysicsBody({ (float)screenWidth / 2, (float)screenHeight - 100 }, new HalfPlane({ 0, -1 }), { 0, 0 }, 0.0f, 0.0f));
 
     while (!WindowShouldClose())
     {
@@ -314,6 +356,7 @@ int main()
             GuiSliderBar(Rectangle{100, 60, 100, 20}, "Gravity", TextFormat("%.2f", sim.gravity.y), &sim.gravity.y, -1000, 1000);
             GuiSliderBar(Rectangle{100, 90, 100, 20}, "Drag", TextFormat("%.2f", spawnDrag), &spawnDrag, 0, 10);
             GuiSliderBar(Rectangle{100, 120, 100, 20}, "Radius", TextFormat("%.2f", spawnRadius), &spawnRadius, 2, 50);
+            GuiCheckBox(Rectangle{100, 150, 20, 20}, "Debug", &showDebug);
             DrawText("Game Physics - Massan Kudsia-Meade 101620204", 1000, 20, 20, BLACK);
 
             if (IsKeyDown(KEY_UP))
@@ -339,6 +382,10 @@ int main()
             sim.Update();
             sim.CheckCollisions();
             sim.Draw();
+            if (showDebug)
+            {
+                sim.DrawDebug();
+            }
 
         EndDrawing();
     }
