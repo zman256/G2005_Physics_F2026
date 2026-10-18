@@ -74,7 +74,7 @@ public:
     void Draw(Vector2 position, Color color) override
     {
         Vector2 along = { -normal.y, normal.x }; // perpendicular to the normal = direction of the surface
-        DrawLineEx(position - along * 5000, position + along * 5000, 3, color); // long enough to look infinite
+        DrawLineEx(position - along * 5000, position + along * 5000, 3, color);
         DrawLineEx(position, position + normal * 60, 3, YELLOW); // normal arrow
         DrawCircleV(position + normal * 60, 5, YELLOW);
     }
@@ -282,7 +282,7 @@ class PhysicsSimulation
 
                     Vector2 d = C - P;
                     float dot = Vector2DotProduct(d, n);
-                    Vector2 projection = P + n * dot; // where C lands on the normal axis
+                    Vector2 projection = P + n * dot; // * dot turns the distance back into a vector
 
                     DrawLineEx(P - n * 2000, P + n * 2000, 1, Fade(YELLOW, 0.4f)); // normal axis being projected onto
                     DrawLineEx(P, C, 2, WHITE); // d = C - P
@@ -340,7 +340,7 @@ int main()
     InitWindow(screenWidth, screenHeight, "Physics-1");
     SetTargetFPS(TARGET_FPS);
 
-    // position, collider, velocity, drag, gravityScale (0 = static)
+    // static circle
     sim.Add(new PhysicsBody({ 800, (float)screenHeight - 300 }, new Circle(80.0f), { 0, 0 }, 0.0f, 0.0f));
     // ground: normal points up
     sim.Add(new PhysicsBody({ (float)screenWidth / 2, (float)screenHeight - 100 }, new HalfPlane({ 0, -1 }), { 0, 0 }, 0.0f, 0.0f));
@@ -375,7 +375,7 @@ int main()
             // Spawn Bird for lab 2
             if (IsKeyPressed(KEY_SPACE))
             {
-                // color (RED) and trailColor (BLACK) come from the class defaults
+                // create bird and launch with space
                 sim.Add(new PhysicsBody(launchPosition, new Circle(spawnRadius), velocityPreview, spawnDrag));
             }
             
