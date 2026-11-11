@@ -18,8 +18,8 @@ const unsigned int TARGET_FPS = 50;
 
 Vector2 launchPosition = { 30, (float)(screenHeight - 50) }; // Slingshot position
 float launchPositionAdjustmentSpeed = 50.0f;
-float launchSpeed = 0.0f;
-float launchAngle = 0.0f;  // Deg
+float launchSpeed = 250.0f;
+float launchAngle = -45.0f;  // Deg
 float spawnDrag = 0.0f; // Damping value to apply to physics object velocities
 // I will use spawn radius to create the expanding bird. for now its just assigned to each birds radius. 
 float spawnRadius = 10.0f;
@@ -95,20 +95,22 @@ public:
     float mass = 1.0f;
     float drag = 0.0f;
     float gravityScale = 1.0f;
+    float maxLifeTime = 10.0f;
+    float currentLifeTime = 0.0f;
     Color color = RED;
     Color trailColor = BLACK;
     std::vector<Vector2> trail;
     static const int trail_Length = 800;
 
-    bool isStatic = false;
+    bool isStatic;
     float bounce = 0.8f;
 
     Collider* collider = nullptr;
 
     float GetInverseMass() const { return isStatic ? 0.0f : 1.0f / mass; }
 
-    PhysicsBody(Vector2 position, Collider* collider, Vector2 velocity = { 0, 0 }, float drag = 0.0f, float gravityScale = 1.0f)
-        : position(position), velocity(velocity), drag(drag), gravityScale(gravityScale), collider(collider) {}
+    PhysicsBody(Collider* collider, Vector2 position, Vector2 velocity = { 0, 0 }, float drag = 0.0f, float gravityScale = 1.0f, bool isStatic = false, float maxLifeTime = 10.0f)
+        : collider(collider), position(position), velocity(velocity), drag(drag), gravityScale(isStatic ? 0.0f : gravityScale), isStatic(isStatic), maxLifeTime(isStatic ? -1.0f : maxLifeTime) {}
 
     ~PhysicsBody()
     {
@@ -120,36 +122,6 @@ public:
     PhysicsBody& operator=(const PhysicsBody&) = delete;
 };
 
-
-//using const in this function stops the function from changing the a and b
-bool isOverlappingCircle(const PhysicsBody& a, const PhysicsBody& b)
-{
-    Vector2 displacement = b.position - a.position;
-    float distanceSq = Vector2DotProduct(displacement, displacement);
-
-    float radA = ((Circle*)a.collider)->radius; // cast to circle then get radius
-    float radB = ((Circle*)b.collider)->radius;
-
-    float sumRadius = radA + radB; // instead of square rooting, just multiply
-    return distanceSq < sumRadius * sumRadius; // if the dot product is less than the circle radius its overlapping
-}
-
-bool isOverlappingCircleHalfPlane(const PhysicsBody& circle, const PhysicsBody& plane)
-{
-    Vector2 normal = ((HalfPlane*)plane.collider)->normal;
-    float radius = ((Circle*)circle.collider)->radius;
-
-    Vector2 displacement = circle.position - plane.position; // d = C - P
-    float distance = Vector2DotProduct(displacement, normal); // projecting d onto the normal = how far C is above the plane
-    return distance < radius;
-}
-
-struct Contacts
-{
-    bool hit = false;
-    Vector2 normal = { 0, 0 };
-    float howMuchOverlap = 0.0f;
-};
 struct Bounds2D
 {
     Bounds2D(float top, float bottom, float left, float right)
@@ -167,40 +139,49 @@ private:
     Vector2 min;
     Vector2 max;
 };
-
-Contacts CircleCircle(const PhysicsBody& a, const PhysicsBody& b)
+struct Contacts
 {
-    Contacts c;
-    Vector2 d = b.position - a.position;
-    float distSq = Vector2DotProduct(d, d);
-    float radiusA = ((Circle*)a.collider)->radius;
-    float radiusB = ((Circle*)b.collider)->radius;
-    float sum = radiusA + radiusB;
+    Vector2 normal = { 0, 0 };
+    float howMuchOverlap = 0.0f;
+};
 
-    if (distSq >= sum * sum) return c; // no overlap
+//using const in this function stops the function from changing the a and b
+bool isOverlappingCircle(const PhysicsBody& a, const PhysicsBody& b, Contacts& contacts)
+{
+    Vector2 displacement = b.position - a.position;
+    float distanceSq = Vector2DotProduct(displacement, displacement);
 
-    float dist = sqrtf(distSq); // only take the square root once they overlap
-    c.hit = true;
-    c.normal = (dist > 0.0001f) ? d * (1.0f / dist) : Vector2{ 0, -1 }; // guard against dividing by 0
-    c.howMuchOverlap = sum - dist;
-    return c;
+    float radA = ((Circle*)a.collider)->radius; // cast to circle then get radius
+    float radB = ((Circle*)b.collider)->radius;
 
+    float sumRadius = radA + radB; // instead of square rooting, just multiply
+
+    if (distanceSq >= sumRadius * sumRadius) return false;
+
+    // if they overlap
+    float distance = sqrtf(distanceSq);
+    contacts.normal = (distance > 0.0001f) ? displacement * (1.0f / distance) : Vector2 { 0 , -1 };
+    contacts.howMuchOverlap = sumRadius - distance;
+    return true;
 }
 
-Contacts CircleHalfPlane(const PhysicsBody& circle, const PhysicsBody& plane)
+bool isOverlappingCircleHalfPlane(const PhysicsBody& circle, const PhysicsBody& plane, Contacts& contacts)
 {
-    Contacts c;
-    Vector2 n = ((HalfPlane*)plane.collider)->normal;
+    Vector2 normal = ((HalfPlane*)plane.collider)->normal;
     float radius = ((Circle*)circle.collider)->radius;
 
-    float distance = Vector2DotProduct(circle.position - plane.position, n);
-    if (distance >= radius) return c;
+    Vector2 displacement = circle.position - plane.position; // d = C - P
+    float distance = Vector2DotProduct(displacement, normal); // projecting d onto the normal = how far C is above the plane
 
-    c.hit = true;
-    c.normal = Vector2Negate(n);       // A->B: from the circle into the plane
-    c.howMuchOverlap = radius - distance;
-    return c;
+    if (distance >= radius) return false;
+
+    contacts.normal = Vector2Negate(normal); // circle -> plane
+    contacts.howMuchOverlap = radius - distance;
+    return true;
 }
+
+
+
 
 void ResolveCollision(PhysicsBody& a, PhysicsBody& b, const Contacts& c)
 {
@@ -214,7 +195,7 @@ void ResolveCollision(PhysicsBody& a, PhysicsBody& b, const Contacts& c)
     a.position -= correction * invA;
     b.position += correction * invB;
 
-    // set impulse. change velocities so the objects bounce
+    // set impulse. change velocities to bounce
     Vector2 relVel = b.velocity - a.velocity;
     float velAlongNorm = Vector2DotProduct(relVel, c.normal);
 
@@ -235,7 +216,7 @@ class PhysicsSimulation
         Vector2 gravity = { 0, 200 }; // Global acceleration due to gravity, in pixels/second/second
         const float FIXED_DELTA_TIME = 1.0f / (float)TARGET_FPS; // A fixed delta time variable is important to physics simulations
         Bounds2D bounds = Bounds2D((float)screenHeight, 0, 0, (float)screenWidth); // Bodies outside this area get removed
-
+        
 
 
         // to check if two vectors overlap, they must be parallel (cross product of their direction vectors equals 0) and the scalar projection of one segment has to fall within the range of the other
@@ -253,62 +234,35 @@ class PhysicsSimulation
                 {
                     PhysicsBody* bodyA = bodies[i];
                     PhysicsBody* bodyB = bodies[j];
-
                     Contacts contacts;
-                    ColliderShape shapeA = bodyA->collider->GetShape();
-                    ColliderShape shapeB = bodyB->collider->GetShape();
 
-                    if (shapeA == CIRCLE && shapeB == CIRCLE)
-                    {
-                        contacts = CircleCircle(*bodyA, *bodyB);
-                        if (contacts.hit) ResolveCollision(*bodyA, *bodyB, contacts);
-                    }
-                    else if (shapeA == CIRCLE && shapeB == HALFPLANE)
-                    {
-                        contacts = CircleHalfPlane(*bodyA, *bodyB);
-                        if (contacts.hit) ResolveCollision(*bodyA, *bodyB, contacts);
-                    }
-                    else if (shapeA == HALFPLANE && shapeB == CIRCLE)
-                    {
-                        contacts = CircleHalfPlane(*bodyB, *bodyA);              // swap so the circle is first
-                        if (contacts.hit) ResolveCollision(*bodyB, *bodyA, contacts);
-                    }
-
-                    if (contacts.hit)
-                    {
-                        bodyA->color = RED;
-                        bodyB->color = BLUE;
-                    }
-                    
-/*                     bool isOverlapping = false;
+                    bool isOverlapping = false;
 
                     //Circle collision
                     // Circle A, Circle B
                     // dont use . because bodies is a ptr. bodyA->collider is the same as (*bodyA).collider
                     if (bodyA->collider->GetShape() == CIRCLE && bodyB->collider->GetShape() == CIRCLE)
                     {
-                        isOverlapping = isOverlappingCircle(*bodyA, *bodyB);
+                        isOverlapping = isOverlappingCircle(*bodyA, *bodyB, contacts);
                     }
                     else if (bodyA->collider->GetShape() == CIRCLE && bodyB->collider->GetShape() == HALFPLANE)
                     {
                         // circle-halfplane collision
-                        isOverlapping = isOverlappingCircleHalfPlane(*bodyA, *bodyB);
+                        isOverlapping = isOverlappingCircleHalfPlane(*bodyA, *bodyB, contacts);
                     }
                     else if (bodyA->collider->GetShape() == HALFPLANE && bodyB->collider->GetShape() == CIRCLE)
                     {
                         // REMOVE the = later
-                        isOverlapping = isOverlappingCircleHalfPlane(*bodyB, *bodyA);
+                        isOverlapping = isOverlappingCircleHalfPlane(*bodyB, *bodyA, contacts);
+                        std::swap(bodyA, bodyB);
                     }
                     
                     if (isOverlapping)
                     {
-                        // bodies[i].color = RED;
-                        // bodies[j].color = RED;  
+                        ResolveCollision(*bodyA, *bodyB, contacts);
                         bodyA->color = RED;
                         bodyB->color = BLUE;
-                    } */
-                    
-                    //HalfPlane collision
+                    }
                     
                 }
             }
@@ -318,6 +272,7 @@ class PhysicsSimulation
         {
             for (int i = 0; i < bodies.size(); i++)
             {
+                if (bodies[i]->isStatic) continue; // if static dont move
                 //velocity is defined in pixels/second --> we need pixels/frame
                 bodies[i]->position += bodies[i]->velocity * FIXED_DELTA_TIME;
 
@@ -339,9 +294,14 @@ class PhysicsSimulation
                     bodies[i]->trail.erase(bodies[i]->trail.begin()); // Remove oldest point
                 }
 
+                // destroy with lifetime
+                bodies[i]->currentLifeTime += FIXED_DELTA_TIME;
+                bool isLifeTimeExpired = bodies[i]->maxLifeTime > 0.0f && bodies[i]->currentLifeTime >= bodies[i]->maxLifeTime;
+
                 //destroy birds when off screen
                 Vector2 p = bodies[i]->position;
-                if (p.y > screenHeight + 100 || p.x > screenWidth + 100 || p.x < -100 || p.y < -100)
+                bool offScreenCheck = p.y > screenHeight + 100 || p.x > screenWidth + 100 || p.x < -100 || p.y < -100;
+                if (isLifeTimeExpired || offScreenCheck)
                 {
                     delete bodies[i]; // free the body itself before removing its pointer
                     bodies.erase(bodies.begin() + i);
@@ -407,19 +367,19 @@ int main()
     sim.bounds = Bounds2D(screenHeight + margin, 0 - margin, 0 - margin, screenWidth + margin);
     InitWindow(screenWidth, screenHeight, "Physics-1");
     SetTargetFPS(TARGET_FPS);
+    
+    PhysicsBody* ground = new PhysicsBody(new HalfPlane({ 0, -1 }), { (float)screenWidth / 2, (float)screenHeight - 25 }, { 0, 0 }, 0.0f, 0.0f, true);
+    sim.Add(ground);
 
     // static circle
-    sim.Add(new PhysicsBody({ 800, (float)screenHeight - 300 }, new Circle(80.0f), { 0, 0 }, 0.0f, 0.0f));
-    // ground
-    sim.Add(new PhysicsBody({ (float)screenWidth / 2, (float)screenHeight - 100 }, new HalfPlane({ 0, -1 }), { 0, 0 }, 0.0f, 0.0f));
+    PhysicsBody* staticCircle = new PhysicsBody(new Circle(80.0f), { 800, (float)screenHeight - 300 }, { 0, 0 }, 0.0f, 0.0f); 
+    sim.Add(staticCircle);
 
-    PhysicsBody* bigCircle = new PhysicsBody({ 800, (float)screenHeight - 300 }, new Circle(80.0f), { 0, 0 }, 0.0f, 0.0f);
-    bigCircle->isStatic = true;
+    // moving circle no lifetime
+    PhysicsBody* bigCircle = new PhysicsBody(new Circle(50.0f), { 800, (float)screenHeight - 300 }, { 0, 0 }, 0.0f, 0.0f, true);
     sim.Add(bigCircle);
 
-    PhysicsBody* ground = new PhysicsBody({ (float)screenWidth / 2, (float)screenHeight - 100 }, new HalfPlane({ 0, -1 }), { 0, 0 }, 0.0f, 0.0f);
-    ground->isStatic = true;
-    sim.Add(ground);
+
 
 
     while (!WindowShouldClose())
@@ -451,7 +411,7 @@ int main()
             // spawn bird
             if (IsKeyPressed(KEY_SPACE))
             {
-                sim.Add(new PhysicsBody(launchPosition, new Circle(spawnRadius), velocityPreview, spawnDrag));
+                sim.Add(new PhysicsBody(new Circle(spawnRadius), launchPosition, velocityPreview, spawnDrag));
             }
             
             sim.Update();
