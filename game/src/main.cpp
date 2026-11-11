@@ -90,6 +90,7 @@ public:
 class PhysicsBody
 {
 public:
+    Collider* collider = nullptr;
     Vector2 position = Vector2 { 0, 0 };
     Vector2 velocity = Vector2 { 0, 0 };
     float mass = 1.0f;
@@ -97,29 +98,84 @@ public:
     float gravityScale = 1.0f;
     float maxLifeTime = 10.0f;
     float currentLifeTime = 0.0f;
+    float lifeTimeAfterHit = -1.0f; // maxLifeTime gets set to this when hit; -1 = hits don't affect lifetime
+    float hitCooldown = 0.2f; // overlaps within this window count as the same hit
     Color color = RED;
     Color trailColor = BLACK;
     std::vector<Vector2> trail;
     static const int trail_Length = 800;
 
-    bool isStatic;
+    bool isStatic = false;
     float bounce = 0.8f;
 
-    Collider* collider = nullptr;
 
     float GetInverseMass() const { return isStatic ? 0.0f : 1.0f / mass; }
 
     PhysicsBody(Collider* collider, Vector2 position, Vector2 velocity = { 0, 0 }, float drag = 0.0f, float gravityScale = 1.0f, bool isStatic = false, float maxLifeTime = 10.0f)
         : collider(collider), position(position), velocity(velocity), drag(drag), gravityScale(isStatic ? 0.0f : gravityScale), isStatic(isStatic), maxLifeTime(isStatic ? -1.0f : maxLifeTime) {}
 
-    ~PhysicsBody()
+    virtual ~PhysicsBody()
     {
         delete collider; // the body owns its collider
     }
 
+    virtual void OnHit(PhysicsBody& other) {} // normal bodies ignore hits
+
+protected:
+    // shared by Bird and Pig: start (or restart) the countdown to deletion
+    void StartHitCountdown()
+    {
+        maxLifeTime = lifeTimeAfterHit;
+        currentLifeTime = 0.0f; // currentLifeTime now doubles as "time since last hit"
+    }
+
+public:
     // no copies: two copies would both delete the same collider
     PhysicsBody(const PhysicsBody&) = delete;
     PhysicsBody& operator=(const PhysicsBody&) = delete;
+};
+
+class Bird : public PhysicsBody
+{
+public:
+    bool hasBeenHit = false;
+
+    Bird(Collider* collider, Vector2 position, Vector2 velocity, float drag = 0.0f, float lifeTime = 10.0f, float lifeTimeAfterHit = 3.0f)
+        : PhysicsBody(collider, position, velocity, drag, 1.0f, false, lifeTime) // default lifetime from spawn
+    {
+        this->lifeTimeAfterHit = lifeTimeAfterHit; // base class member, so it's set here instead of the initializer list
+    }
+
+    void OnHit(PhysicsBody& other) override
+    {
+        if (hasBeenHit && other.isStatic) return; // lying on the ground shouldn't keep resetting it
+        if (hasBeenHit && currentLifeTime < hitCooldown) return; // still the same impact
+
+        hasBeenHit = true;
+        StartHitCountdown(); // switch from the default lifetime to the hit countdown
+    }
+};
+
+class Pig : public PhysicsBody
+{
+public:
+    //float health = 100.0f;
+
+    Pig(Collider* collider, Vector2 position, float lifeTimeAfterHit = 2.0f)
+        : PhysicsBody(collider, position, { 0, 0 }, 0.0f, 1.0f, false, -1.0f) // -1 = infinite until hit
+    {
+        this->lifeTimeAfterHit = lifeTimeAfterHit; // base class member, so it's set here instead of the initializer list
+    }
+
+    void OnHit(PhysicsBody& other) override
+    {
+        if (other.collider->GetShape() == HALFPLANE) return; // ground check
+
+        bool countdownRunning = maxLifeTime > 0.0f;
+        if (countdownRunning && currentLifeTime < hitCooldown) return; // still the same impact
+
+        StartHitCountdown(); // start countdown or restart on new hit
+    }
 };
 
 struct Bounds2D
@@ -180,10 +236,7 @@ bool isOverlappingCircleHalfPlane(const PhysicsBody& circle, const PhysicsBody& 
     return true;
 }
 
-
-
-
-void ResolveCollision(PhysicsBody& a, PhysicsBody& b, const Contacts& c)
+void ResolveCollision(PhysicsBody& a, PhysicsBody& b, const Contacts& c, float restingSpeed)
 {
     float invA = a.GetInverseMass();
     float invB = b.GetInverseMass();
@@ -203,6 +256,9 @@ void ResolveCollision(PhysicsBody& a, PhysicsBody& b, const Contacts& c)
     if (velAlongNorm > 0.0f) return;
 
     float e = fminf(a.bounce, b.bounce);
+
+    if (-velAlongNorm < restingSpeed) e = 0.0f;
+
     float j = -(1.0f + e) * velAlongNorm / invSum; // impulse magnitude
 
     Vector2 impulse = c.normal * j;
@@ -216,8 +272,6 @@ class PhysicsSimulation
         Vector2 gravity = { 0, 200 }; // Global acceleration due to gravity, in pixels/second/second
         const float FIXED_DELTA_TIME = 1.0f / (float)TARGET_FPS; // A fixed delta time variable is important to physics simulations
         Bounds2D bounds = Bounds2D((float)screenHeight, 0, 0, (float)screenWidth); // Bodies outside this area get removed
-        
-
 
         // to check if two vectors overlap, they must be parallel (cross product of their direction vectors equals 0) and the scalar projection of one segment has to fall within the range of the other
         // projection = dividing the dot product of the two vectors by the magnitude of the vector you are projecting to
@@ -259,7 +313,10 @@ class PhysicsSimulation
                     
                     if (isOverlapping)
                     {
-                        ResolveCollision(*bodyA, *bodyB, contacts);
+                        float restingSpeed = Vector2Length((gravity) * FIXED_DELTA_TIME * 2.0f);
+                        ResolveCollision(*bodyA, *bodyB, contacts, restingSpeed);
+                        bodyA->OnHit(*bodyB);
+                        bodyB->OnHit(*bodyA);
                         bodyA->color = RED;
                         bodyB->color = BLUE;
                     }
@@ -372,13 +429,15 @@ int main()
     sim.Add(ground);
 
     // static circle
-    PhysicsBody* staticCircle = new PhysicsBody(new Circle(80.0f), { 800, (float)screenHeight - 300 }, { 0, 0 }, 0.0f, 0.0f); 
+    PhysicsBody* staticCircle = new PhysicsBody(new Circle(30.0f), { 800, (float)screenHeight - 300 }, { 0, 0 }, 0.0f, 0.0f); 
     sim.Add(staticCircle);
 
-    // moving circle no lifetime
-    PhysicsBody* bigCircle = new PhysicsBody(new Circle(50.0f), { 800, (float)screenHeight - 300 }, { 0, 0 }, 0.0f, 0.0f, true);
+    // moving circle
+    PhysicsBody* bigCircle = new PhysicsBody(new Circle(80.0f), { 800, (float)screenHeight - 300 }, { 0, 0 }, 0.0f, 0.0f, true);
     sim.Add(bigCircle);
 
+    Pig* enemy = new Pig(new Circle(30.0f), { 1200, (float)screenHeight - 200 }, 2.0f);
+    sim.Add(enemy);
 
 
 
@@ -411,7 +470,8 @@ int main()
             // spawn bird
             if (IsKeyPressed(KEY_SPACE))
             {
-                sim.Add(new PhysicsBody(new Circle(spawnRadius), launchPosition, velocityPreview, spawnDrag));
+                // bird: dies after 10 seconds, or 3 seconds after it hits something
+                sim.Add(new Bird(new Circle(spawnRadius), launchPosition, velocityPreview, spawnDrag, 10.0f, 3.0f));
             }
             
             sim.Update();
