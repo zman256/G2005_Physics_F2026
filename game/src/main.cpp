@@ -8,6 +8,7 @@ See documentation here: https://www.raylib.com/, and examples here: https://www.
 #include "raymath.h"
 #define RAYGUI_IMPLEMENTATION
 #include "raygui.h"
+#include <iostream>
 #include <vector>
 
 int screenWidth = 1600;
@@ -38,7 +39,7 @@ class Collider
 public:
     virtual ~Collider() = default; // so delete on a Collider* destroys the Circle/HalfPlane correctly
     virtual ColliderShape GetShape() = 0; // pure virtual function or "abstract" function to use polymorphism
-    virtual void Draw(Vector2 position, Color color) = 0; // the body passes in its position and color
+    virtual void Draw(Vector2 position, Color color) = 0; 
 };
 
 class Circle : public Collider
@@ -46,7 +47,7 @@ class Circle : public Collider
 public:
     float radius;
 
-    Circle(float radius) : radius(radius) {} // radius has to be given, so it's never garbage
+    Circle(float radius) : radius(radius) {}
 
     ColliderShape GetShape() override
     {
@@ -62,7 +63,7 @@ public:
 class HalfPlane : public Collider
 {
 public:
-    Vector2 normal; // unit vector pointing to the open side ({0, -1} = up, since y goes down in raylib)
+    Vector2 normal; // unit vector pointing to the open side of the halfplane ({0, -1} = up, since y goes down in raylib)
 
     HalfPlane(Vector2 normal) : normal(Vector2Normalize(normal)) {} // normalize so it's always length 1
 
@@ -99,7 +100,12 @@ public:
     std::vector<Vector2> trail;
     static const int trail_Length = 800;
 
+    bool isStatic = false;
+    float bounce = 0.8f;
+
     Collider* collider = nullptr;
+
+    float GetInverseMass() const { return isStatic ? 0.0f : 1.0f / mass; }
 
     PhysicsBody(Vector2 position, Collider* collider, Vector2 velocity = { 0, 0 }, float drag = 0.0f, float gravityScale = 1.0f)
         : position(position), velocity(velocity), drag(drag), gravityScale(gravityScale), collider(collider) {}
@@ -138,6 +144,12 @@ bool isOverlappingCircleHalfPlane(const PhysicsBody& circle, const PhysicsBody& 
     return distance < radius;
 }
 
+struct Contacts
+{
+    bool hit = false;
+    Vector2 normal = { 0, 0 };
+    float howMuchOverlap = 0.0f;
+};
 struct Bounds2D
 {
     Bounds2D(float top, float bottom, float left, float right)
@@ -156,6 +168,66 @@ private:
     Vector2 max;
 };
 
+Contacts CircleCircle(const PhysicsBody& a, const PhysicsBody& b)
+{
+    Contacts c;
+    Vector2 d = b.position - a.position;
+    float distSq = Vector2DotProduct(d, d);
+    float radiusA = ((Circle*)a.collider)->radius;
+    float radiusB = ((Circle*)b.collider)->radius;
+    float sum = radiusA + radiusB;
+
+    if (distSq >= sum * sum) return c; // no overlap
+
+    float dist = sqrtf(distSq); // only take the square root once they overlap
+    c.hit = true;
+    c.normal = (dist > 0.0001f) ? d * (1.0f / dist) : Vector2{ 0, -1 }; // guard against dividing by 0
+    c.howMuchOverlap = sum - dist;
+    return c;
+
+}
+
+Contacts CircleHalfPlane(const PhysicsBody& circle, const PhysicsBody& plane)
+{
+    Contacts c;
+    Vector2 n = ((HalfPlane*)plane.collider)->normal;
+    float radius = ((Circle*)circle.collider)->radius;
+
+    float distance = Vector2DotProduct(circle.position - plane.position, n);
+    if (distance >= radius) return c;
+
+    c.hit = true;
+    c.normal = Vector2Negate(n);       // A->B: from the circle into the plane
+    c.howMuchOverlap = radius - distance;
+    return c;
+}
+
+void ResolveCollision(PhysicsBody& a, PhysicsBody& b, const Contacts& c)
+{
+    float invA = a.GetInverseMass();
+    float invB = b.GetInverseMass();
+    float invSum = invA + invB;
+    if (invSum == 0.0f) return; // if two static bodies, do nothing
+
+    // positional correction: push apart, split by mass. lighter objects move more, static dont move
+    Vector2 correction = c.normal * (c.howMuchOverlap / invSum);
+    a.position -= correction * invA;
+    b.position += correction * invB;
+
+    // set impulse. change velocities so the objects bounce
+    Vector2 relVel = b.velocity - a.velocity;
+    float velAlongNorm = Vector2DotProduct(relVel, c.normal);
+
+    // if already moving apart. dont pull them back together
+    if (velAlongNorm > 0.0f) return;
+
+    float e = fminf(a.bounce, b.bounce);
+    float j = -(1.0f + e) * velAlongNorm / invSum; // impulse magnitude
+
+    Vector2 impulse = c.normal * j;
+    a.velocity -= impulse * invA;
+    b.velocity += impulse * invB;
+}
 
 class PhysicsSimulation
 {
@@ -163,6 +235,8 @@ class PhysicsSimulation
         Vector2 gravity = { 0, 200 }; // Global acceleration due to gravity, in pixels/second/second
         const float FIXED_DELTA_TIME = 1.0f / (float)TARGET_FPS; // A fixed delta time variable is important to physics simulations
         Bounds2D bounds = Bounds2D((float)screenHeight, 0, 0, (float)screenWidth); // Bodies outside this area get removed
+
+
 
         // to check if two vectors overlap, they must be parallel (cross product of their direction vectors equals 0) and the scalar projection of one segment has to fall within the range of the other
         // projection = dividing the dot product of the two vectors by the magnitude of the vector you are projecting to
@@ -177,10 +251,36 @@ class PhysicsSimulation
             {
                 for (int j = i + 1; j < bodies.size(); j++)
                 {
-                    PhysicsBody* bodyA = bodies[i]; // already a pointer, so no & needed
+                    PhysicsBody* bodyA = bodies[i];
                     PhysicsBody* bodyB = bodies[j];
 
-                    bool isOverlapping = false;
+                    Contacts contacts;
+                    ColliderShape shapeA = bodyA->collider->GetShape();
+                    ColliderShape shapeB = bodyB->collider->GetShape();
+
+                    if (shapeA == CIRCLE && shapeB == CIRCLE)
+                    {
+                        contacts = CircleCircle(*bodyA, *bodyB);
+                        if (contacts.hit) ResolveCollision(*bodyA, *bodyB, contacts);
+                    }
+                    else if (shapeA == CIRCLE && shapeB == HALFPLANE)
+                    {
+                        contacts = CircleHalfPlane(*bodyA, *bodyB);
+                        if (contacts.hit) ResolveCollision(*bodyA, *bodyB, contacts);
+                    }
+                    else if (shapeA == HALFPLANE && shapeB == CIRCLE)
+                    {
+                        contacts = CircleHalfPlane(*bodyB, *bodyA);              // swap so the circle is first
+                        if (contacts.hit) ResolveCollision(*bodyB, *bodyA, contacts);
+                    }
+
+                    if (contacts.hit)
+                    {
+                        bodyA->color = RED;
+                        bodyB->color = BLUE;
+                    }
+                    
+/*                     bool isOverlapping = false;
 
                     //Circle collision
                     // Circle A, Circle B
@@ -206,7 +306,7 @@ class PhysicsSimulation
                         // bodies[j].color = RED;  
                         bodyA->color = RED;
                         bodyB->color = BLUE;
-                    }
+                    } */
                     
                     //HalfPlane collision
                     
@@ -263,37 +363,6 @@ class PhysicsSimulation
             }
         }
 
-        // Draws each step of the circle vs half plane dot product so it can be seen at runtime
-        void DrawDebug()
-        {
-            for (int i = 0; i < bodies.size(); i++)
-            {
-                for (int j = 0; j < bodies.size(); j++)
-                {
-                    if (bodies[i]->collider->GetShape() != CIRCLE || bodies[j]->collider->GetShape() != HALFPLANE)
-                    {
-                        continue; // only circle (i) vs half plane (j) pairs
-                    }
-
-                    Vector2 C = bodies[i]->position; // circle centre
-                    Vector2 P = bodies[j]->position; // point on the plane
-                    Vector2 n = ((HalfPlane*)bodies[j]->collider)->normal;
-                    float radius = ((Circle*)bodies[i]->collider)->radius;
-
-                    Vector2 d = C - P;
-                    float dot = Vector2DotProduct(d, n);
-                    Vector2 projection = P + n * dot; // * dot turns the distance back into a vector
-
-                    DrawLineEx(P - n * 2000, P + n * 2000, 1, Fade(YELLOW, 0.4f)); // normal axis being projected onto
-                    DrawLineEx(P, C, 2, WHITE); // d = C - P
-                    DrawLineEx(C, projection, 1, LIGHTGRAY); // drop from C onto the axis
-                    DrawLineEx(P, projection, 4, ORANGE); // the dot product as a length along the normal
-                    DrawCircleV(P + n * radius, 5, RED); // overlap threshold: overlapping when dot < radius
-                    DrawText(TextFormat("dot = %.1f  r = %.1f", dot, radius), (int)C.x + 15, (int)C.y - 25, 18, BLACK);
-                }
-            }
-        }
-
         // the simulation owns the body now and deletes it when it's removed
         void Add(PhysicsBody* body)
         {
@@ -332,7 +401,6 @@ class PhysicsSimulation
 // PhysicsBody bird; // = {Vector2{-1000, -1000,}, Vector2{ 0, 0 }};
 PhysicsSimulation sim;
 float margin = 0;
-bool showDebug = true;
 
 int main()
 {
@@ -342,8 +410,17 @@ int main()
 
     // static circle
     sim.Add(new PhysicsBody({ 800, (float)screenHeight - 300 }, new Circle(80.0f), { 0, 0 }, 0.0f, 0.0f));
-    // ground: normal points up
+    // ground
     sim.Add(new PhysicsBody({ (float)screenWidth / 2, (float)screenHeight - 100 }, new HalfPlane({ 0, -1 }), { 0, 0 }, 0.0f, 0.0f));
+
+    PhysicsBody* bigCircle = new PhysicsBody({ 800, (float)screenHeight - 300 }, new Circle(80.0f), { 0, 0 }, 0.0f, 0.0f);
+    bigCircle->isStatic = true;
+    sim.Add(bigCircle);
+
+    PhysicsBody* ground = new PhysicsBody({ (float)screenWidth / 2, (float)screenHeight - 100 }, new HalfPlane({ 0, -1 }), { 0, 0 }, 0.0f, 0.0f);
+    ground->isStatic = true;
+    sim.Add(ground);
+
 
     while (!WindowShouldClose())
     {
@@ -356,7 +433,6 @@ int main()
             GuiSliderBar(Rectangle{100, 60, 100, 20}, "Gravity", TextFormat("%.2f", sim.gravity.y), &sim.gravity.y, -1000, 1000);
             GuiSliderBar(Rectangle{100, 90, 100, 20}, "Drag", TextFormat("%.2f", spawnDrag), &spawnDrag, 0, 10);
             GuiSliderBar(Rectangle{100, 120, 100, 20}, "Radius", TextFormat("%.2f", spawnRadius), &spawnRadius, 2, 50);
-            GuiCheckBox(Rectangle{100, 150, 20, 20}, "Debug", &showDebug);
             DrawText("Game Physics - Massan Kudsia-Meade 101620204", 1000, 20, 20, BLACK);
 
             if (IsKeyDown(KEY_UP))
@@ -372,20 +448,15 @@ int main()
             DrawCircleV(launchPosition, 10, BROWN);
             DrawLineEx(launchPosition, launchPosition + velocityPreview, 2, GREEN);
 
-            // Spawn Bird for lab 2
+            // spawn bird
             if (IsKeyPressed(KEY_SPACE))
             {
-                // create bird and launch with space
                 sim.Add(new PhysicsBody(launchPosition, new Circle(spawnRadius), velocityPreview, spawnDrag));
             }
             
             sim.Update();
             sim.CheckCollisions();
             sim.Draw();
-            if (showDebug)
-            {
-                sim.DrawDebug();
-            }
 
         EndDrawing();
     }
