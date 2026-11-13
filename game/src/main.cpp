@@ -64,18 +64,34 @@ class HalfPlane : public Collider
 {
 public:
     Vector2 normal; // unit vector pointing to the open side of the halfplane ({0, -1} = up, since y goes down in raylib)
+    float length;
+    float halfLength;
+    float angle = 0.0f;
 
-    HalfPlane(Vector2 normal) : normal(Vector2Normalize(normal)) {} // normalize so it's always length 1
-
+    HalfPlane(Vector2 normal, float length = 10000.0f) : normal(Vector2Normalize(normal)), length(length), halfLength(length * 0.5f) // normalize so it's always length 1
+    {
+        angle = atan2f(this->normal.x, -this->normal.y) * RAD2DEG;
+    }
     ColliderShape GetShape() override
     {
         return HALFPLANE;
     }
 
+    // getter for the direction perpendicular to the normal (direction of where the surface faces)
+    Vector2 GetSurfaceDirection() const { return { -normal.y, normal.x }; } 
+
+    float GetHalfLength() const { return length * 0.5f; }
+
+    void SetAngle(float degrees)
+    {
+        angle = degrees;
+        normal = Vector2Rotate({ 0, -1 }, angle * DEG2RAD);
+    }
+
     void Draw(Vector2 position, Color color) override
     {
-        Vector2 along = { -normal.y, normal.x }; // perpendicular to the normal = direction of the surface
-        DrawLineEx(position - along * 5000, position + along * 5000, 3, color);
+        Vector2 normalDirection = GetSurfaceDirection();
+        DrawLineEx(position - normalDirection * halfLength, position + normalDirection * halfLength, 3, color);
         DrawLineEx(position, position + normal * 60, 3, YELLOW); // normal arrow
         DrawCircleV(position + normal * 60, 5, YELLOW);
     }
@@ -106,7 +122,7 @@ public:
     static const int trail_Length = 800;
 
     bool isStatic = false;
-    float bounce = 0.8f;
+    float bounce = 0.5f;
 
 
     float GetInverseMass() const { return isStatic ? 0.0f : 1.0f / mass; }
@@ -168,7 +184,8 @@ public:
 
     void OnHit(PhysicsBody& other) override
     {
-        if (other.collider->GetShape() == HALFPLANE) return; // ground check
+        //if (other.collider->GetShape() == HALFPLANE) return; // ground check
+        if (other.isStatic) return; // ground check
 
         bool countdownRunning = maxLifeTime > 0.0f;
         if (countdownRunning && currentLifeTime < hitCooldown) return; // still the same impact
@@ -222,15 +239,18 @@ bool isOverlappingCircle(const PhysicsBody& a, const PhysicsBody& b, Contacts& c
 
 bool isOverlappingCircleHalfPlane(const PhysicsBody& circle, const PhysicsBody& plane, Contacts& contacts)
 {
+    HalfPlane* hp = (HalfPlane*)plane.collider;
     Vector2 normal = ((HalfPlane*)plane.collider)->normal;
     float radius = ((Circle*)circle.collider)->radius;
 
     Vector2 displacement = circle.position - plane.position; // d = C - P
-    float distance = Vector2DotProduct(displacement, normal); // projecting d onto the normal = how far C is above the plane
+    float distance = Vector2DotProduct(displacement, hp->normal); // projecting d onto the normal = how far C is above the plane
+    float alongDist = Vector2DotProduct(displacement, hp->GetSurfaceDirection()); // pos along the line
 
-    if (distance >= radius) return false;
+    if (distance >= radius) return false; // above
+    if (fabsf(alongDist) > hp->halfLength) return false; // past endpoint
 
-    contacts.normal = Vector2Negate(normal); // circle -> plane
+    contacts.normal = Vector2Negate(hp->normal); // circle -> plane
     contacts.howMuchOverlap = radius - distance;
     return true;
 }
@@ -243,7 +263,10 @@ void ResolveCollision(PhysicsBody& a, PhysicsBody& b, const Contacts& c, float r
     if (invSum == 0.0f) return; // if two static bodies, do nothing
 
     // positional correction: push apart, split by mass. lighter objects move more, static dont move
-    Vector2 correction = c.normal * (c.howMuchOverlap / invSum);
+    // allow a overlap so objects at rest stay in contact with the ground
+    const float overlapAllowed = 0.5f;
+    float depth = fmaxf(c.howMuchOverlap - overlapAllowed, 0.0f);
+    Vector2 correction = c.normal * (depth / invSum);
     a.position -= correction * invA;
     b.position += correction * invB;
 
@@ -377,6 +400,7 @@ class PhysicsSimulation
                 }
 
                 bodies[i]->collider->Draw(bodies[i]->position, bodies[i]->color); // virtual: each shape draws itself
+                
             }
         }
 
@@ -418,26 +442,43 @@ class PhysicsSimulation
 // PhysicsBody bird; // = {Vector2{-1000, -1000,}, Vector2{ 0, 0 }};
 PhysicsSimulation sim;
 float margin = 0;
+  // screenWidth = 1600 screenHeight = 1400
+  
 
 int main()
 {
     sim.bounds = Bounds2D(screenHeight + margin, 0 - margin, 0 - margin, screenWidth + margin);
     InitWindow(screenWidth, screenHeight, "Physics-1");
     SetTargetFPS(TARGET_FPS);
-    
+  
+    Vector2 screenPos = { (float)screenWidth / 2, (float)screenHeight / 2 };
+
     PhysicsBody* ground = new PhysicsBody(new HalfPlane({ 0, -1 }), { (float)screenWidth / 2, (float)screenHeight - 25 }, { 0, 0 }, 0.0f, 0.0f, true);
+    ground->bounce = 0.3f;
     sim.Add(ground);
 
-    // static circle
+    PhysicsBody* plane = new PhysicsBody(new HalfPlane({ 0, -1 }, 250.f), {600, (float)screenHeight - 250}, { 0, 0 }, 0.0f, 0.0f, true);
+    sim.Add(plane);
+    PhysicsBody* plane2 = new PhysicsBody(new HalfPlane({ 1, -1 }, 250.f), {100, (float)screenHeight - 250}, { 0, 0 }, 0.0f, 0.0f, true);
+    sim.Add(plane2);
+    PhysicsBody* plane3 = new PhysicsBody(new HalfPlane({ -1, -1 }, 250.f), {1200, (float)screenHeight - 250}, { 0, 0 }, 0.0f, 0.0f, true);
+    sim.Add(plane3);
+
+    /* // static circle
     PhysicsBody* staticCircle = new PhysicsBody(new Circle(30.0f), { 800, (float)screenHeight - 300 }, { 0, 0 }, 0.0f, 0.0f); 
-    sim.Add(staticCircle);
+    sim.Add(staticCircle); */
 
-    // moving circle
+/*     // moving circle
     PhysicsBody* bigCircle = new PhysicsBody(new Circle(80.0f), { 800, (float)screenHeight - 300 }, { 0, 0 }, 0.0f, 0.0f, true);
-    sim.Add(bigCircle);
+    sim.Add(bigCircle); */
 
-    Pig* enemy = new Pig(new Circle(30.0f), { 1200, (float)screenHeight - 200 }, 2.0f);
+    Pig* enemy = new Pig(new Circle(30.0f), { 100, (float)screenHeight - 500 }, -1.0f);
     sim.Add(enemy);
+    Pig* enemy2 = new Pig(new Circle(30.0f), { 600, (float)screenHeight - 500 }, -1.0f);
+    sim.Add(enemy2);
+    Pig* enemy3 = new Pig(new Circle(30.0f), { 1200, (float)screenHeight - 500 }, -1.0f);
+    sim.Add(enemy3);
+    HalfPlane* planeShape = (HalfPlane*)plane->collider;
 
 
 
@@ -445,6 +486,7 @@ int main()
     {
         BeginDrawing();
             ClearBackground(Color{ 100, 100, 166, 225});
+            
             // GUI
             DrawRectangle(0, 0, 260, 600, Color{255, 255, 255, 20 });
             GuiSliderBar(Rectangle{100, 0, 100, 20}, "LaunchSpeed", TextFormat("%.2f", launchSpeed), &launchSpeed, 1.0f, 500.0f);
@@ -452,6 +494,8 @@ int main()
             GuiSliderBar(Rectangle{100, 60, 100, 20}, "Gravity", TextFormat("%.2f", sim.gravity.y), &sim.gravity.y, -1000, 1000);
             GuiSliderBar(Rectangle{100, 90, 100, 20}, "Drag", TextFormat("%.2f", spawnDrag), &spawnDrag, 0, 10);
             GuiSliderBar(Rectangle{100, 120, 100, 20}, "Radius", TextFormat("%.2f", spawnRadius), &spawnRadius, 2, 50);
+            GuiSliderBar(Rectangle{100, 150, 100, 20}, "Plane Angle", TextFormat("%.1f", planeShape->angle), &planeShape->angle, -90.0f, 90.0f);
+            planeShape->SetAngle(planeShape->angle);
             DrawText("Game Physics - Massan Kudsia-Meade 101620204", 1000, 20, 20, BLACK);
 
             if (IsKeyDown(KEY_UP))
@@ -470,8 +514,11 @@ int main()
             // spawn bird
             if (IsKeyPressed(KEY_SPACE))
             {
-                // bird: dies after 10 seconds, or 3 seconds after it hits something
-                sim.Add(new Bird(new Circle(spawnRadius), launchPosition, velocityPreview, spawnDrag, 10.0f, 3.0f));
+                sim.Add(new Bird(new Circle(spawnRadius), launchPosition, velocityPreview, spawnDrag, 10.0f, 8.0f));
+            }
+            if (IsKeyPressed(KEY_B))
+            {
+                sim.Add(new Bird(new Circle(spawnRadius), {600, 500}, {0,0}, spawnDrag, 20.0f, -1.0f));
             }
             
             sim.Update();
