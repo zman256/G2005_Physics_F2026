@@ -98,7 +98,7 @@ public:
     float gravityScale = 1.0f;
     float maxLifeTime = 10.0f;
     float currentLifeTime = 0.0f;
-    float lifeTimeAfterHit = -1.0f; // maxLifeTime gets set to this when hit; -1 = hits don't affect lifetime
+    float lifeTimeAfterHit = -1.0f; // maxLifeTime gets set to this when hit. -1 = hits don't affect lifetime
     float hitCooldown = 0.2f; // overlaps within this window count as the same hit
     Color color = RED;
     Color trailColor = BLACK;
@@ -122,7 +122,7 @@ public:
     virtual void OnHit(PhysicsBody& other) {} // normal bodies ignore hits
 
 protected:
-    // shared by Bird and Pig: start (or restart) the countdown to deletion
+    // shared by Bird and Pig: start or restart the countdown
     void StartHitCountdown()
     {
         maxLifeTime = lifeTimeAfterHit;
@@ -130,7 +130,6 @@ protected:
     }
 
 public:
-    // no copies: two copies would both delete the same collider
     PhysicsBody(const PhysicsBody&) = delete;
     PhysicsBody& operator=(const PhysicsBody&) = delete;
 };
@@ -162,9 +161,9 @@ public:
     //float health = 100.0f;
 
     Pig(Collider* collider, Vector2 position, float lifeTimeAfterHit = 2.0f)
-        : PhysicsBody(collider, position, { 0, 0 }, 0.0f, 1.0f, false, -1.0f) // -1 = infinite until hit
+        : PhysicsBody(collider, position, { 0, 0 }, 0.0f, 1.0f, false, -1.0f)
     {
-        this->lifeTimeAfterHit = lifeTimeAfterHit; // base class member, so it's set here instead of the initializer list
+        this->lifeTimeAfterHit = lifeTimeAfterHit; 
     }
 
     void OnHit(PhysicsBody& other) override
@@ -255,13 +254,14 @@ void ResolveCollision(PhysicsBody& a, PhysicsBody& b, const Contacts& c, float r
     // if already moving apart. dont pull them back together
     if (velAlongNorm > 0.0f) return;
 
+    // coefficient of restitution = e
     float e = fminf(a.bounce, b.bounce);
 
     if (-velAlongNorm < restingSpeed) e = 0.0f;
 
-    float j = -(1.0f + e) * velAlongNorm / invSum; // impulse magnitude
+    float impulseMagnitude = -(1.0f + e) * velAlongNorm / invSum; // impulse magnitude
 
-    Vector2 impulse = c.normal * j;
+    Vector2 impulse = c.normal * impulseMagnitude;
     a.velocity -= impulse * invA;
     b.velocity += impulse * invB;
 }
